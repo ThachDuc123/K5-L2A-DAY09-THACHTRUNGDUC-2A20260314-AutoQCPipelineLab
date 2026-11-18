@@ -1,7 +1,7 @@
 # Báo cáo Day 09 — Thạch Trung Đức, 2A20260314
 
 ## 1. Kết luận trước
-Pipeline chạy ra kết luận **Hold** (mã thoát `10`). Trong 224 ảnh thô đưa vào bước intake, máy loại 22 ảnh lỗi đầu vào và giữ lại 202/224 ảnh. Cuối pipeline xuất bản nháp 202 ảnh sang `submission/export/clean_v1/` (`manifest.json` sha1 `08522be8b27b006b8032e380e7574437996eef3b`), chưa chuyển sang Release. Lý do chính là tuy đã hết lỗi bắt buộc (`07_error_list_v3.txt` còn 0 `ERROR`, 6 ảnh thiếu file nhãn đã được người duyệt trong ngân sách 80 ảnh), nhưng vẫn còn 38/202 ảnh chưa duyệt mang cảnh báo `WARN` (`18.81% >= 10%`), tổng cộng 77 dòng cảnh báo còn lại do hàng đợi có 125 ảnh mà ngân sách chỉ cho duyệt 80 ảnh.
+Pipeline chạy ra kết luận **Hold** ( `10`). Trong 224 ảnh thô đưa vào bước intake, máy loại 22 ảnh lỗi đầu vào và giữ lại 202/224 ảnh. Cuối pipeline xuất bản nháp 202 ảnh sang `submission/export/clean_v1/` (`manifest.json` sha1 `08522be8b27b006b8032e380e7574437996eef3b`), chưa chuyển sang Release. Lý do chính là tuy đã hết lỗi bắt buộc (`07_error_list_v3.txt` còn 0 `ERROR`, 6 ảnh thiếu file nhãn đã được người duyệt trong ngân sách 80 ảnh), nhưng vẫn còn 38/202 ảnh chưa duyệt mang cảnh báo `WARN` (`18.81% >= 10%`), tổng cộng 77 dòng cảnh báo còn lại do hàng đợi có 125 ảnh mà ngân sách chỉ cho duyệt 80 ảnh.
 
 ## 2. Lỗi và phân việc
 Số liệu gom từ `submission/reports/02_error_list_v1.txt` (tổng 211 dòng gồm 22 `ERROR` từ bước intake, 36 `ERROR` và 153 `WARN` ở vòng QC 1):
