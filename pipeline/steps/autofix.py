@@ -27,13 +27,175 @@ Bẫy cần nghĩ tới (có test cho từng cái)
 
 Gợi ý: `yaml.safe_load / safe_dump`.
 """
-from collections import defaultdict  # noqa: F401
+from collections import defaultdict
 
-import yaml  # noqa: F401
+import yaml
 
-from ..common import ERROR, parse_yolo_line  # noqa: F401
+from ..common import ERROR, parse_yolo_line
+
+REMOVE_IMAGE_CODES = {"LEAK_TEST", "CORRUPT_IMAGE", "BAD_SIZE"}
+DROP_LINE_CODES = {"BAD_FORMAT", "BAD_CLASS_ID", "BOX_ZERO", "DUP_BOX"}
+
+
+def _is_remove_image(code: str) -> bool:
+    return code in REMOVE_IMAGE_CODES or code.startswith("DUP_IMAGE_")
 
 
 def fix(ds, issues, cfg):
-    # TODO
-    raise NotImplementedError("autofix chưa làm")
+    """Tự động sửa các lỗi bắt buộc (ERROR) trong thư mục `ds` và trả về log thay đổi."""
+    err_issues = [i for i in issues if i.severity == ERROR]
+    fixes = []
+    removed_stems: set[str] = set()
+
+    # 1. Loại ảnh hỏng / sai kích thước / trùng / rò rỉ trước
+    for iss in err_issues:
+        if _is_remove_image(iss.code) and iss.image not in removed_stems:
+            img_p = ds.image_path(iss.image)
+            lbl_p = ds.label_path(iss.image)
+            before = img_p.name if img_p else iss.image
+            if img_p and img_p.exists():
+                img_p.unlink()
+            if lbl_p.exists():
+                lbl_p.unlink()
+            removed_stems.add(iss.image)
+            fixes.append(
+                {
+                    "image": iss.image,
+                    "line": "",
+                    "action": "remove_image",
+                    "before": before,
+                    "after": "(đã xoá)",
+                }
+            )
+
+    # 2. Sửa tên lớp trong data.yaml (tối đa 1 lần)
+    if any(iss.code == "BAD_CLASS_NAME" for iss in err_issues):
+        expected = dict(enumerate(cfg["classes"]))
+        current = ds.yaml_names()
+        if current != expected:
+            data = {}
+            if ds.yaml_path.exists():
+                data = yaml.safe_load(ds.yaml_path.read_text(encoding="utf-8")) or {}
+            before = str(current)
+            data["names"] = expected
+            ds.yaml_path.write_text(
+                yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
+            fixes.append(
+                {
+                    "image": "data.yaml",
+                    "line": "",
+                    "action": "rename_classes",
+                    "before": before,
+                    "after": str(cfg["classes"]),
+                }
+            )
+
+    # 3. Ảnh thiếu file nhãn -> chuyển người gán (không tự tạo file rỗng)
+    needs_label_seen: set[str] = set()
+    for iss in err_issues:
+        if (
+            iss.code == "MISSING_LABEL_FILE"
+            and iss.image not in removed_stems
+            and iss.image not in needs_label_seen
+        ):
+            needs_label_seen.add(iss.image)
+            fixes.append(
+                {
+                    "image": iss.image,
+                    "line": "",
+                    "action": "needs_label",
+                    "before": "(không có file)",
+                    "after": "chuyển người gán",
+                }
+            )
+
+    # 4. Gom lỗi theo file & số dòng gốc để sửa một lần mỗi file
+    by_file: dict[str, dict[int, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for iss in err_issues:
+        if iss.line is not None and iss.image not in removed_stems:
+            if iss.code in DROP_LINE_CODES or iss.code == "BOX_OUT_OF_IMAGE":
+                by_file[iss.image][iss.line].add(iss.code)
+
+    for stem in sorted(by_file):
+        lp = ds.label_path(stem)
+        if not lp.exists():
+            continue
+        orig_lines = lp.read_text(encoding="utf-8", errors="replace").splitlines()
+        new_lines = []
+        modified = False
+        line_map = by_file[stem]
+
+        for line_no, raw in enumerate(orig_lines, 1):
+            codes = line_map.get(line_no)
+            if not codes:
+                new_lines.append(raw)
+                continue
+
+            if codes & DROP_LINE_CODES:
+                fixes.append(
+                    {
+                        "image": stem,
+                        "line": line_no,
+                        "action": "drop_line",
+                        "before": raw.strip(),
+                        "after": "(đã xoá)",
+                    }
+                )
+                modified = True
+                continue
+
+            if "BOX_OUT_OF_IMAGE" in codes:
+                try:
+                    cls_id, cx, cy, w, h = parse_yolo_line(raw)
+                except ValueError:
+                    fixes.append(
+                        {
+                            "image": stem,
+                            "line": line_no,
+                            "action": "drop_line",
+                            "before": raw.strip(),
+                            "after": "(đã xoá)",
+                        }
+                    )
+                    modified = True
+                    continue
+
+                x1 = max(0.0, min(1.0, cx - w / 2))
+                y1 = max(0.0, min(1.0, cy - h / 2))
+                x2 = max(0.0, min(1.0, cx + w / 2))
+                y2 = max(0.0, min(1.0, cy + h / 2))
+                nw, nh = x2 - x1, y2 - y1
+                if nw <= 1e-9 or nh <= 1e-9:
+                    fixes.append(
+                        {
+                            "image": stem,
+                            "line": line_no,
+                            "action": "drop_line",
+                            "before": raw.strip(),
+                            "after": "(đã xoá)",
+                        }
+                    )
+                    modified = True
+                    continue
+
+                ncx, ncy = (x1 + x2) / 2, (y1 + y2) / 2
+                fixed_line = f"{cls_id} {ncx:.6f} {ncy:.6f} {nw:.6f} {nh:.6f}"
+                new_lines.append(fixed_line)
+                fixes.append(
+                    {
+                        "image": stem,
+                        "line": line_no,
+                        "action": "clip_box",
+                        "before": raw.strip(),
+                        "after": fixed_line,
+                    }
+                )
+                modified = True
+
+        if modified:
+            content = "\n".join(new_lines) + ("\n" if new_lines else "")
+            lp.write_text(content, encoding="utf-8")
+
+    return fixes
